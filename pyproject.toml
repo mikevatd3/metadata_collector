@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "metadata"
+version = "0.1.0"
+description = "A dataset documentation system."
+authors = ["mikevatd3 <mike@datadrivendetroit.org>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.10, <=3.13"
+click = "^8.1.7"
+psycopg2 = "^2.9.9"
+tomli = "^2.0.1"
+returns = "^0.23.0"
+sqlalchemy = "^2.0.32"
+pandas = "^2.2.2"
+prompt-toolkit = "^3.0.47"
+pyttsx3 = "^2.90"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
