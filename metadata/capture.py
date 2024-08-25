@@ -3,6 +3,7 @@ import logging
 import pandas as pd
 from dateutil.parser import parse as parse_date, ParserError as DateParseError
 from sqlalchemy import insert, MetaData, Table, select
+from itertools import groupby
 
 from prompt_toolkit import prompt
 from prompt_toolkit.shortcuts import confirm
@@ -11,32 +12,6 @@ from prompt_toolkit.validation import Validator
 
 from .connection import db_engine
 from .app_logger import setup_logging
-
-
-def get_available_datasets(db):
-    """
-    This will eventually be a db read.
-    """
-    return {
-        "detroit_parcels": (1, ["apples", "tomatoes", "potatoes"]),
-        # "munoz_llcs": ["llc_name", "num_blight_violations"]
-    }
-
-
-def get_current_keywords(db):
-    """
-    Also a DB read.
-    """
-
-    return ["parcels", "detroit", "taxpayers"]
-
-
-def get_current_standards(db):
-    """
-    And another.
-    """
-
-    return ["parcels", "detroit", "taxpayers"]
 
 
 class RegistrationHandler:
@@ -51,7 +26,8 @@ class RegistrationHandler:
         self.filename = filename
         self.file = file
         self.db_engine = db_engine
-        self.logger = logging.getLogger(config["app"]["name"])
+        self.topic = config["app"]["name"]
+        self.logger = logging.getLogger(self.topic)
 
         setup_logging()
 
@@ -73,12 +49,12 @@ class RegistrationHandler:
         self.standards = Table("standards", metadata, autoload_with=db_engine)
 
         with db_engine.connect() as db:
-            self.keyword_completer = WordCompleter(get_current_keywords(db))
-            self.available_datasets = get_available_datasets(db)
+            self.keyword_completer = WordCompleter(
+                self.get_current_keywords(db)
+            )
+            self.available_datasets = self.get_available_datasets(db)
 
-        self.dataset_completer = WordCompleter(
-            list(self.available_datasets.keys())
-        )
+        self.dataset_completer = WordCompleter(list(self.available_datasets.keys()))
 
         def validate_date(date: str):
             try:
@@ -136,7 +112,7 @@ class RegistrationHandler:
                     **previous_kws,
                     **{row.content: row.id for row in new_kw_result.fetchall()},
                 }
-                
+
                 self.logger.info(kw_ids)
 
                 db.execute(
@@ -271,6 +247,7 @@ class RegistrationHandler:
             "notes": notes,
             "use_conditions": use_conditions,
             "cadence": cadence,
+            "topic": self.topic,
         }, keywords
 
     def register_variables(self, dataset_id):
@@ -388,3 +365,43 @@ class RegistrationHandler:
             "collection_end": collection_end,
             "acquisition_date": acquisition_date,
         }
+
+    def get_available_datasets(self, db):
+        stmt = select(
+            self.dataset_table.c["id"],
+            self.dataset_table.c["table_name"],
+            self.variable_table.c["variable_name"],
+        ).select_from(
+            self.dataset_table.join(
+                self.variable_table,
+                (self.dataset_table.c.id == self.variable_table.c.dataset_id),
+            )
+        )
+
+        self.logger.info(stmt.compile())
+
+        result = db.execute(stmt)
+
+        return {
+            dataset[1]: (dataset[0], [row[2] for row in rows])
+            for dataset, rows in groupby(
+                result.fetchall(), lambda row: (row[0], row[1])
+            )
+        }
+
+    def get_current_keywords(self, db):
+        """
+        Also a DB read.
+        """
+
+        stmt = select(self.keyword_table.c["content"])
+        result = db.execute(stmt)
+
+        return [item[0] for item in result]
+
+    def get_current_standards(self):
+        """
+        And another.
+        """
+
+        return []
