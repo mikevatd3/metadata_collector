@@ -2,8 +2,6 @@ import logging
 
 import pandas as pd
 from dateutil.parser import parse as parse_date, ParserError as DateParseError
-from sqlalchemy import insert, MetaData, Table, select
-from itertools import groupby
 
 from prompt_toolkit import prompt
 from prompt_toolkit.shortcuts import confirm
@@ -12,6 +10,7 @@ from prompt_toolkit.validation import Validator
 
 from .connection import db_engine
 from .app_logger import setup_logging
+from .access import MetadataConnection
 
 
 class RegistrationHandler:
@@ -25,36 +24,23 @@ class RegistrationHandler:
     def __init__(self, filename, file: pd.DataFrame, config):
         self.filename = filename
         self.file = file
-        self.db_engine = db_engine
         self.topic = config["app"]["name"]
         self.logger = logging.getLogger(self.topic)
+        self.db_engine = db_engine
 
         setup_logging()
+        self.md = MetadataConnection(self.logger)
 
-        metadata = MetaData()
+        with self.db_engine.connect() as db:
+            self.available_keywords = self.md.get_all_keywords(db)
+            self.available_datasets = self.md.get_available_datasets(db)
 
-        self.dataset_table = Table(
-            "datasets", metadata, autoload_with=db_engine
+        self.keyword_completer = WordCompleter(
+            list(self.available_keywords.keys())
         )
-        self.variable_table = Table(
-            "variables", metadata, autoload_with=db_engine
+        self.dataset_completer = WordCompleter(
+            list(self.available_datasets.keys())
         )
-        self.edition_table = Table(
-            "editions", metadata, autoload_with=db_engine
-        )
-        self.keyword_table = Table(
-            "keywords", metadata, autoload_with=db_engine
-        )
-        self.tags_table = Table("tags", metadata, autoload_with=db_engine)
-        self.standards = Table("standards", metadata, autoload_with=db_engine)
-
-        with db_engine.connect() as db:
-            self.keyword_completer = WordCompleter(
-                self.get_current_keywords(db)
-            )
-            self.available_datasets = self.get_available_datasets(db)
-
-        self.dataset_completer = WordCompleter(list(self.available_datasets.keys()))
 
         def validate_date(date: str):
             try:
@@ -74,64 +60,35 @@ class RegistrationHandler:
             "if this is the first time documenting this dataset.\n-> ",
             completer=self.dataset_completer,
         )
+
+        is_new = dataset_name not in self.available_datasets
+
+        if is_new:
+            dataset_details, keywords = self.register_dataset(dataset_name)
+            variable_details = self.register_variables()
+            new_keywords = [
+                kw for kw in keywords if kw not in self.available_keywords
+            ]
+            prev_kw_ids = {
+                kw: id for kw, id in self.available_keywords if kw in keywords
+            }
+
+            # TODO lookup and add keywords to tags table
+
+        edition_details = self.register_edition()
+
+        # TODO This migth need a refactor to deal with the if more elegantly
         with self.db_engine.connect() as db:
-            is_new = dataset_name not in self.available_datasets
-
             if is_new:
-                dataset_details, keywords = self.register_dataset(dataset_name)
+                dataset_id = self.md.insert_dataset(dataset_details, db)  # type: ignore
+                self.md.insert_variables(variable_details, dataset_id, db)  # type: ignore
+                new_kw_ids = self.md.insert_new_keywords(new_keywords, db)  # type: ignore
 
-                ds_insert_stmt = (
-                    insert(self.dataset_table)
-                    .values(**dataset_details)
-                    .returning(self.dataset_table.c["id"])
-                )
-
-                result = db.execute(ds_insert_stmt)
-                row = result.fetchone()
-                dataset_id = row.id  # Does this really need a try except?
-
-                # TODO lookup and add keywords to tags table
-                kw_lookup_stmt = select(self.keyword_table).where(
-                    self.keyword_table.c.content.in_(keywords)
-                )
-
-                kw_result = db.execute(kw_lookup_stmt)
-                previous_kws = {row.content: row.id for row in kw_result}
-                new_kws = [kw for kw in keywords if kw not in previous_kws]
-
-                new_kw_insert_stmt = insert(self.keyword_table).returning(
-                    self.keyword_table.c.id, self.keyword_table.c.content
-                )
-
-                new_kw_result = db.execute(
-                    new_kw_insert_stmt,
-                    [{"content": keyword} for keyword in new_kws],
-                )
-
-                kw_ids = {
-                    **previous_kws,
-                    **{row.content: row.id for row in new_kw_result.fetchall()},
-                }
-
-                self.logger.info(kw_ids)
-
-                db.execute(
-                    insert(self.tags_table),
-                    [
-                        {"dataset_id": dataset_id, "kw_id": keyword_id}
-                        for keyword_id in kw_ids.values()
-                    ],
-                )
-
-                variable_details = self.register_variables(dataset_id)
-
-                for variable, standard in variable_details:
-                    v_insert_stmt = insert(self.variable_table).values(
-                        **variable
-                    )
-                    db.execute(v_insert_stmt)
-
-                    # TODO Lookup and append the standards
+                tags = [
+                    *prev_kw_ids.values(),  # type: ignore
+                    *new_kw_ids.values(),
+                ]
+                self.md.tag_dataset(tags, dataset_id, db)
 
             else:
                 dataset_id, columns = self.available_datasets[dataset_name]
@@ -144,11 +101,7 @@ class RegistrationHandler:
                     "calling the 'document' function."
                 )
 
-            edition_details = self.register_edition(dataset_id)
-
-            e_insert_stmt = insert(self.edition_table).values(**edition_details)
-            db.execute(e_insert_stmt)
-
+            self.md.insert_edition(edition_details, dataset_id, db)
             db.commit()
 
     def register_dataset(self, dataset_name):
@@ -250,7 +203,7 @@ class RegistrationHandler:
             "topic": self.topic,
         }, keywords
 
-    def register_variables(self, dataset_id):
+    def register_variables(self):
         """
         Each variable needs to go through a new workflow.
         """
@@ -318,7 +271,6 @@ class RegistrationHandler:
                     {
                         "variable_name": variable_name,
                         "description": description,
-                        "dataset_id": dataset_id,
                         "data_type": data_type,
                         "parent_variable": parent_variable,
                         "suppression_threshold": suppression_threshold,
@@ -329,7 +281,7 @@ class RegistrationHandler:
 
         return result
 
-    def register_edition(self, dataset_id):
+    def register_edition(self):
         """
         Each time the dataset is downloaded, the dataset edition has to
         be documented.
@@ -357,7 +309,6 @@ class RegistrationHandler:
         )
 
         return {
-            "dataset_id": dataset_id,
             "num_records": num_records,
             "notes": notes,
             "publish_date": publish_date,
@@ -365,43 +316,3 @@ class RegistrationHandler:
             "collection_end": collection_end,
             "acquisition_date": acquisition_date,
         }
-
-    def get_available_datasets(self, db):
-        stmt = select(
-            self.dataset_table.c["id"],
-            self.dataset_table.c["table_name"],
-            self.variable_table.c["variable_name"],
-        ).select_from(
-            self.dataset_table.join(
-                self.variable_table,
-                (self.dataset_table.c.id == self.variable_table.c.dataset_id),
-            )
-        )
-
-        self.logger.info(stmt.compile())
-
-        result = db.execute(stmt)
-
-        return {
-            dataset[1]: (dataset[0], [row[2] for row in rows])
-            for dataset, rows in groupby(
-                result.fetchall(), lambda row: (row[0], row[1])
-            )
-        }
-
-    def get_current_keywords(self, db):
-        """
-        Also a DB read.
-        """
-
-        stmt = select(self.keyword_table.c["content"])
-        result = db.execute(stmt)
-
-        return [item[0] for item in result]
-
-    def get_current_standards(self):
-        """
-        And another.
-        """
-
-        return []
