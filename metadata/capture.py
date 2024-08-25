@@ -11,6 +11,7 @@ from prompt_toolkit.validation import Validator
 from .connection import db_engine
 from .app_logger import setup_logging
 from .access import MetadataConnection
+from .vimput import gather_text_with_editor
 
 
 class RegistrationHandler:
@@ -21,12 +22,13 @@ class RegistrationHandler:
     on field names and data types.
     """
 
-    def __init__(self, filename, file: pd.DataFrame, config):
+    def __init__(self, filename, file: pd.DataFrame, vim_edit=False, config):
         self.filename = filename
         self.file = file
         self.topic = config["app"]["name"]
         self.logger = logging.getLogger(self.topic)
         self.db_engine = db_engine
+        self.vim_edit = vim_edit
 
         setup_logging()
         self.md = MetadataConnection(self.logger)
@@ -110,10 +112,14 @@ class RegistrationHandler:
         out to the calling function to actually do the insert this is
         to preserve the rollback option.
         """
-
-        description = prompt(
-            "Provide a short description of the table: ",
-        )
+        if self.vim_edit:
+            description = gather_text_with_editor(
+                "Provide a description of the table below",
+            )
+        else:
+            description = prompt(
+                "Provide a short description of the table: ",
+            )
         unit_of_analysis = prompt(
             "What is the unit of analysis of this table? ",
         )
@@ -145,7 +151,10 @@ class RegistrationHandler:
         # Keywords
 
         def validate_keywords(value):
-            return len(value) > 3
+            try:
+                return len(value) > 3
+            except TypeError:
+                return False
 
         keyword_validator = Validator.from_callable(
             validate_keywords,
@@ -208,16 +217,22 @@ class RegistrationHandler:
         Each variable needs to go through a new workflow.
         """
 
-        datatype_completer = WordCompleter(["numeric", "string", "timestamp"])
+        datatype_completer = WordCompleter(["numeric", "string", "date"])
 
         result = []
         for variable_name in self.file.columns:
             print(f"Variable name: {variable_name} ")
             print(f"Example rows:\n{self.file[variable_name].head()}")
+            
+            if self.vim_edit:
+                description = gather_text_with_editor(
+                    "Provide a short description of this variable below",
+                )
+            else:
+                description = prompt(
+                    "Provide a short description about this variable: ",
+                )
 
-            description = prompt(
-                "Provide a short description about what this variable is reporting: ",
-            )
             data_type = prompt(
                 "What is data type of this variable? ",
                 completer=datatype_completer,
