@@ -22,7 +22,7 @@ class RegistrationHandler:
     on field names and data types.
     """
 
-    def __init__(self, filename, file: pd.DataFrame, vim_edit=False, config):
+    def __init__(self, filename, file: pd.DataFrame, config, vim_edit=False):
         self.filename = filename
         self.file = file
         self.topic = config["app"]["name"]
@@ -72,7 +72,7 @@ class RegistrationHandler:
                 kw for kw in keywords if kw not in self.available_keywords
             ]
             prev_kw_ids = {
-                kw: id for kw, id in self.available_keywords if kw in keywords
+                kw: id for kw, id in self.available_keywords.items() if kw in keywords
             }
 
             # TODO lookup and add keywords to tags table
@@ -223,7 +223,7 @@ class RegistrationHandler:
         for variable_name in self.file.columns:
             print(f"Variable name: {variable_name} ")
             print(f"Example rows:\n{self.file[variable_name].head()}")
-            
+
             if self.vim_edit:
                 description = gather_text_with_editor(
                     "Provide a short description of this variable below",

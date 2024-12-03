@@ -3,8 +3,6 @@ from subprocess import call
 import logging
 import tomli
 
-from app_logger import setup_logging
-
 
 def gather_text_with_editor(initial_message="Enter your input below"):
     EDITOR = os.environ.get("EDITOR", "nvim")
@@ -20,6 +18,8 @@ def gather_text_with_editor(initial_message="Enter your input below"):
 
 
 if __name__ == "__main__":
+    from app_logger import setup_logging
+
     with open("config.toml", "rb") as f:
         config = tomli.load(f)
 
