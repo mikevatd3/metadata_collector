@@ -12,5 +12,5 @@ with open(config_path, "rb") as f:
 db_engine = create_engine(
     f"postgresql+psycopg2://{app_config['db']['user']}:{app_config['db']['password']}"
     f"@{app_config['db']['host']}:{app_config['db']['port']}/{app_config['db']['name']}",
-    connect_args={'options': '-csearch_path={}'.format(app_config["app"]["name"])}
+    connect_args={'options': '-csearch_path={}'.format(app_config["db"]["metadata_schema"])}
 )
